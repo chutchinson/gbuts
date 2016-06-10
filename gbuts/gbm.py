@@ -1,9 +1,12 @@
 """handling and analysis of Fermi data"""
 
 import os
+import theano
+import theano.tensor as T
 import numpy as np
 from geometry import *
 from clock import *
+import scipy.special
 
 __version__ = "$Id: gbm.py 230 2015-02-08 21:48:21Z lindy.blackburn@LIGO.ORG $"
 __author__ = "Lindy Blackburn"
@@ -535,19 +538,73 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
     # vbfit: variance in bg estimate from statistical, vbsys: variance in bg estimate from systematic
     return (fg, bg) if not fitqual else (fg, bg, goodfit, vbfit, vbsys, xsqdof)
 
+def newtonian_extrapolation(b, f, p, s, r, vr, vb, spos, vfinv):
+
+    a = (f - p) * vfinv # alpha factor for simplification
+    dvf = spos[:,np.newaxis] * (2*s[:,np.newaxis]*vr + r) # s derivative of vf
+    asqmvfinv = a**2 - vfinv
+    dl   = np.sum(r*a + 0.5 * dvf * asqmvfinv, axis=-1) # exact first and second derivatives dl/ds
+    ddl  = np.sum(-vfinv * (dvf * a + r)**2 + vr * asqmvfinv + 0.5 * (dvf * vfinv)**2, axis=-1)
+    s    = s - dl/ddl # new guess for source ampltiude (dL/da = 0)
+    p    = b + r * s[:,np.newaxis] # second predicted foreground rate
+    spos = s > 0 # only include source terms to variance for positive s
+    vf    = np.maximum(b, p) + vb + (spos*s)[:,np.newaxis]**2 * vr # total foreground variance
+    vfinv = 1. / vf # inverse to save on divides
+
+    return s, p, spos, vfinv
+
+def newtonian_extrapolation_theano():
+
+    # Set the theano 'floatX' flag adjust precision; double precision floating-point
+    # operations are much slower in GPUs.
+    #
+    # http://deeplearning.net/software/theano/library/config.html
+
+    b = T.row('b')
+    f = T.row('f')
+    p = T.matrix('p')
+    s = T.vector('s')
+    r = T.matrix('r')
+    vr = T.matrix('vr')
+    vb = T.row('vb')
+    vfinv = T.row('vfinv')
+    spos = T.vector('spos')
+
+    a = (f - p) * vfinv
+    dvf = spos[:, np.newaxis] * (2 * s[:, np.newaxis] * vr + r)
+    asqmvfinv = a**2 - vfinv
+    dl = T.sum(r * a + 0.5 * dvf * asqmvfinv, axis=-1)
+    ddl = T.sum(-vfinv * (dvf * a + r)**2 + vr * asqmvfinv + 0.5 * (dvf * vfinv)**2, axis=-1)
+
+    o_s = s - dl / ddl
+    o_p = b + r * o_s[:, np.newaxis]
+    o_spos = o_s > 0
+    o_vf = T.maximum(b, p) + vb + (spos * s)[:, np.newaxis] ** 2 * vr
+    o_vfinv = 1.0 / o_vf[0:1,:]
+
+    return theano.function(inputs=[b, f, p, s, r, vr, vb, spos, vfinv],
+                           outputs=[o_s, o_p, o_spos, o_vfinv],
+                           on_unused_input='warn', allow_input_downcast=True)
+
 # calculate likelihood and chisq for measured foreground, estimated background, and response
 # fg and bg should correspond to the final index/indices of response[spectrum, skylocation, .., channel, detector]
 # it may be safer to pre-flatten all arrays to make sure they line up correctly
 # returns (s, l1, l2) = (total likelihood, best estimate of amplitude, snr term, chisq term)
 # beta=1.0 is scale free
-def gbmlikelihood(fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=0.05, vb=0, vr=0):
-    import scipy.special
-    if response == None: # no response used (only SNR term will be valid), maybe should change this to costh resp
+def gbmlikelihood(extrapolation_fn, fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=0.05, vb=0, vr=0):
+
+    if extrapolation_fn is None:
+        raise Exception('no extrapolation function specified')
+
+    if response is None: # no response used (only SNR term will be valid), maybe should change this to costh resp
         response = np.ones_like(fg)
+
     beta = np.abs(beta)
+
     # verify shape compatibility (avoid bugs)
     np.broadcast(response, fg)
     np.broadcast(response, bg)
+
     # calculate max log likelihood and estimate variance of likelihood distribution
     f    = fg.ravel()[np.newaxis, :] # flatten out everything into 2 axes: (variables, measurements)
     b    = bg.ravel()[np.newaxis, :] # same for bg mean
@@ -568,6 +625,7 @@ def gbmlikelihood(fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=
         vr = vr.reshape(r.shape)
     if type(sigref) == np.ndarray:
         sigref = sigref.ravel()
+
     # paper forumula uses (1+erf) for simplicity because reference ll does not matter yet
     lref = beta * np.log(gamma) + (1-beta) * np.log(sigref)
 
@@ -579,18 +637,21 @@ def gbmlikelihood(fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=
     spos = s > 0 # response uncertainty will only contribute for positive amplitude
     p = b + r * s[:,np.newaxis] # predicted foreground rate
 
-    # newtonian extrapolation to find true max likelihood
     for i in range(nnewton):
-        a = (f - p) * vfinv # alpha factor for simplification
-        dvf = spos[:,np.newaxis] * (2*s[:,np.newaxis]*vr + r) # s derivative of vf
-        asqmvfinv = a**2 - vfinv
-        dl   = np.sum(r*a + 0.5 * dvf * asqmvfinv, axis=-1) # exact first and second derivatives dl/ds
-        ddl  = np.sum(-vfinv * (dvf * a + r)**2 + vr * asqmvfinv + 0.5 * (dvf * vfinv)**2, axis=-1)
-        s    = s - dl/ddl # new guess for source ampltiude (dL/da = 0)
-        p    = b + r * s[:,np.newaxis] # second predicted foreground rate
-        spos = s > 0 # only include source terms to variance for positive s
-        vf    = np.maximum(b, p) + vb + (spos*s)[:,np.newaxis]**2 * vr # total foreground variance
-        vfinv = 1. / vf # inverse to save on divides
+        (s, p, spos, vfinv) = extrapolation_fn(b, f, p, s, r, vr, vb, spos, vfinv)
+
+    # newtonian extrapolation to find true max likelihood
+    # for i in range(nnewton):
+    #     a = (f - p) * vfinv # alpha factor for simplification
+    #     dvf = spos[:,np.newaxis] * (2*s[:,np.newaxis]*vr + r) # s derivative of vf
+    #     asqmvfinv = a**2 - vfinv
+    #     dl   = np.sum(r*a + 0.5 * dvf * asqmvfinv, axis=-1) # exact first and second derivatives dl/ds
+    #     ddl  = np.sum(-vfinv * (dvf * a + r)**2 + vr * asqmvfinv + 0.5 * (dvf * vfinv)**2, axis=-1)
+    #     s    = s - dl/ddl # new guess for source ampltiude (dL/da = 0)
+    #     p    = b + r * s[:,np.newaxis] # second predicted foreground rate
+    #     spos = s > 0 # only include source terms to variance for positive s
+    #     vf    = np.maximum(b, p) + vb + (spos*s)[:,np.newaxis]**2 * vr # total foreground variance
+    #     vfinv = 1. / vf # inverse to save on divides
 
     e = f - p
     # ll = np.sum(0.5 * (np.log(vn * vfinv) + d**2 / vn - e**2 * vfinv), axis=-1) # max likelihood
@@ -606,8 +667,10 @@ def gbmlikelihood(fg, bg, response=None, nnewton=3, beta=1.0, gamma=2.5, sigref=
     logo = np.log(1+scipy.special.erf(s*sqvinv*(1/np.sqrt(2)))) # overlap between gaussian and s>0 region (error function)
     # technically logo should have extra term of -ln(2), but paper formula skips because lref can cancel it out
     llmarg = logsqv + logo + logp + ll # full marginalized likelihood
+
     # log likelihood = amplitude prior + approx marginalization over s + max log likelihood over s
     varsshape = response.shape[:response.ndim-fg.ndim] # return result in the same shape as input
+
     if(len(varsshape) > 1):
         return (s.reshape(varsshape), (llmarg-lref).reshape(varsshape))
     else:

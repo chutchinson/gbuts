@@ -74,7 +74,7 @@ else:
     skymap = None
 
 # reference 1-sigma sensitivities for the 3 model spectra, normalized to phot/cm^2 [50-300 keV, 1s]
-# sigref = np.array([0.4, 0.8, 0.4])[:,np.newaxis] * np.ones_like(phi)[np.newaxis,:]
+#sigref = np.array([0.4, 0.8, 0.4])[:,np.newaxis] * np.ones_like(phi)[np.newaxis,:]
 sigref2 = [0.4, 0.8, 0.4]
 
 # load direct response table pickle files (3, 41168, 8, 12) : spectra, locations, channels, detectors
@@ -192,10 +192,19 @@ else:
 
     (atmonai, combinednai) = (None, None) # move this memory save here since we need atmo resp
 
+# set extrapolation function for likelihood calculation
+
+# extrapolation_fn = gbm.newtonian_extrapolation
+extrapolation_fn = gbm.newtonian_extrapolation_theano()
+
 # loop over all foreground intervals sorted by time
+
 print "scanning %d foreground intervals between %.3f and %.3f" % (len(sourcewindows), startmet, endmet)
+
 clockstart = time.time()
+
 for (met, dur) in sourcewindows:
+
     sys.stdout.write('.'); sys.stdout.flush()
 
     # UTC time corresponding to current central time
@@ -245,6 +254,7 @@ for (met, dur) in sourcewindows:
     # opt.injection is "met dur phi theta spec amplitude" string, need to match spec with likelihood
     # injection parameter sent to gbmfit is: (injt, injdur, injrate) = injection in MET time, rate in cts/s
     # we have the responses directnai, directbgo, atmonai  (spec, sky, chan, det)
+
     (nfg, nbg, ngoodfit, nvfit, nvsys, nx2) = gbm.gbmfit(data, met, dur, poiss=False, fitqual=True, dlist=gbm.nlist, injection=injarg)
     (bfg, bbg, bgoodfit, bvfit, bvsys, bx2) = gbm.gbmfit(data, met, dur, poiss=False, fitqual=True, dlist=gbm.blist, injection=injarg)
 
@@ -299,13 +309,15 @@ for (met, dur) in sourcewindows:
     bg = np.hstack((nbg.ravel(), bbg.ravel()))
     vb = np.hstack((nvfit.ravel(), bvfit.ravel()))
     gc.collect() # save a little memory :(
+
     # split up by spectrum to save a little memory :(
-    # (s, ll) = gbm.gbmlikelihood(fg, bg, resp, beta=1.0, gamma=2.5, sigref=sigref[:,earthmask])
+    #(s, ll) = gbm.gbmlikelihood(fg, bg, resp, beta=1.0, gamma=2.5, sigref=sigref[:,earthmask])
     s = np.zeros(resp.shape[:2])
     ll = np.zeros(resp.shape[:2])
+
     for i in range(len(sigref2)):
-        (s[i,:], ll[i,:]) = gbm.gbmlikelihood(fg, bg, resp[i,:,:], beta=1.0, gamma=2.5, sigref=sigref2[i], vb=vb)
-        itemp = np.argmax(ll[i,:])
+        (s[i,:], ll[i,:]) = gbm.gbmlikelihood(extrapolation_fn, fg, bg, resp[i,:,:], beta=1.0, gamma=2.5, sigref=sigref2[i], vb=vb)
+        # itemp = np.argmax(ll[i,:])
         # print "==== " + spectra[i] + "==== " + repr(itemp) + " / " + repr(nvisible)
         # print (s[i, itemp], ll[i, itemp])
         # print (phi[itemp], theta[itemp])

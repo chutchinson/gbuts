@@ -1,0 +1,13 @@
+[global]
+device=gpu0
+floatX=float32
+openmp=True
+openmp_elemwise_minsize=200000
+allow_gc=False
+
+[nvcc]
+fastmath=True
+flags=-D_FORCE_INLINES
+
+[cmodule]
+preload_cache=True
