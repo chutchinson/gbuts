@@ -3,10 +3,10 @@
 import os
 import theano
 import theano.tensor as T
-import numpy as np
-from geometry import *
-from clock import *
 import scipy.special
+
+from gbuts.geometry import *
+from gbuts.clock import *
 
 __version__ = "$Id: gbm.py 230 2015-02-08 21:48:21Z lindy.blackburn@LIGO.ORG $"
 __author__ = "Lindy Blackburn"
@@ -74,8 +74,8 @@ naitable = """
 10 123.7  90.4
 11 183.7  90.3
 """
-naitablearray = np.array([map(float, line.strip().split()) for line in naitable.strip().split("\n")])
-naipt = naitablearray[:,1:3].T * np.pi/180. # angle clockwise from spacecraft x axis, angle from z axis
+naitablearray = np.array([list(map(float, line.strip().split())) for line in naitable.strip().split("\n")])
+naipt = naitablearray[:, 1:3].T * np.pi/180.0 # angle clockwise from spacecraft x axis, angle from z axis
 naixyz = pt2xyz(naipt)
 
 bgoxyz = np.array([[1, -1], [0, 0], [0, 0]])
@@ -119,7 +119,7 @@ def loadswifttable(filename = 'catalog/grb_table_1334177322.txt'):
     f.close()
     table = s.strip().split('\n')
     cols   = table[0].strip().split('\t')
-    table = [dict(zip(cols, line.split('\t'))) for line in table[1:]]
+    table = [dict(list(zip(cols, line.split('\t')))) for line in table[1:]]
     # select BAT detections with BAT or XRT locations
     table = [line for line in table if line['BAT T90 [sec]'] != "n/a" and \
       (line['BAT RA (J2000)'] != "n/a" or line['XRT RA (J2000)'] != "n/a")]
@@ -137,7 +137,7 @@ def loadswifttable(filename = 'catalog/grb_table_1334177322.txt'):
 def loadfermitable(filename = "catalog/fermitable.txt"):
     table = [line.strip().split('|')[1:-1] for line in open(filename) if line[0] == '|']
     cols = [key.strip() for key in table[0]]
-    table = [dict(zip(cols, row)) for row in table[1:]]
+    table = [dict(list(zip(cols, row))) for row in table[1:]]
     return table
 
 def loadflaretable(filename = "catalog/fermi_gbm_flare_list.txt"):
@@ -170,11 +170,11 @@ def loadflaretable(filename = "catalog/fermi_gbm_flare_list.txt"):
 # poshist=True: load poshist data into key data['poshist']
 def precachedata(met0, met1, dlist=dlist, poshist=True, fermidir=fermidir, fork=None):
     if fork is True: # fork process to build cache
-        import subprocess, cPickle
+        import subprocess, pickle
         proc = subprocess.Popen(['python', '-c', \
            "import gbuts.gbm; gbuts.gbm.precachedata(%f, %f, dlist=%s, poshist=%s, fermidir=%s, fork=False)" \
            % (met0, met1, dlist, poshist, repr(fermidir))], stdout=subprocess.PIPE)
-        cache = cPickle.load(proc.stdout)
+        cache = pickle.load(proc.stdout)
     else: # load fits files to build cache
         if met1 < met0:
             met1 = met0 + met1
@@ -248,8 +248,8 @@ def precachedata(met0, met1, dlist=dlist, poshist=True, fermidir=fermidir, fork=
                     (data, poshtable, poshdata) = (None, None, None)
             day += datetime.timedelta(1) # add 1 day
     if fork is False: # send cache over to stdout
-        import sys, cPickle
-        cPickle.dump(cache, sys.stdout, protocol=2)
+        import sys, pickle
+        pickle.dump(cache, sys.stdout, protocol=2)
         return None
     else: # fork is True or fork is None
         import sys
@@ -264,7 +264,7 @@ def precachedata(met0, met1, dlist=dlist, poshist=True, fermidir=fermidir, fork=
                   Datastruct(data=np.hstack(cache['poshist']['GLAST POS HIST']).view(np.recarray))
             return cache
         except:
-            print sys.exc_info() # probably out of GTI or no data
+            print((sys.exc_info())) # probably out of GTI or no data
             return None
 
 # load GBM daily data for UTC datetime (download if necessary)
@@ -334,13 +334,13 @@ def loadposhist(timestruc):
 # dqshade will tag the corresponding plots where True, shape (nchan, ndetectors)
 def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=False, plot=False, degree=None, fitsize=10., plotsize=5.,
            fitqual=False, rebin=None, crveto=True, injection=None, fitconf=False, dqshade=None):
-    import fit
+    from . import fit
     # split dlist and channels if necessary
     if type(dlist) is str:
         dlist = dlist.split()
     if type(channels) is str:
         channels = channels.split()
-        channels = map(int, channels)
+        channels = list(map(int, channels))
     if rebin is None and duration > 1.025: # auto set rebin for long durations
         rebin = True
     (nd, nc) = (len(dlist), len(channels))
@@ -349,13 +349,13 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
     fg = np.zeros((nc, nd))     # measured counts in fg window
     bg = np.zeros((nc, nd))     # background estimate in fg window
     goodfit = np.ones((nc, nd)) # boolean True for good fit (low chisq)
-    vbfit = np.zeros((nc, nd))  # variance in bg estimate due to fit parameter errors       
+    vbfit = np.zeros((nc, nd))  # variance in bg estimate due to fit parameter errors
     vbsys = np.zeros((nc, nd))  # variance in bg estimate due to systematic error from polynomial model
     xsqdof = np.zeros((nc, nd)) # chisq DOF of bg fit
     if degree == None:
         degree = max(2, 1+np.ceil(np.log2(duration)/2.))
     if plot:
-        import plots
+        from . import plots
         plots.importmpl()
         plt = plots.plt
         import itertools
@@ -495,7 +495,7 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
                     plt.errorbar(tcent[fgidx]+duration/2., flux[fgidx], yerr=err[fgidx], fmt='.', color='green', zorder=4)
                 plt.errorbar(fgt+duration/2., fg[j,i]/fgdur, yerr=np.sqrt(bg[j,i])/fgdur, fmt='.', color='red', zorder=4)
                 plt.xlim([(-plotsize+0.5)*duration, (plotsize+0.5)*duration])
-                print (d, channels[j])
+                print ((d, channels[j]))
                 # for some reason AnchoredText started needing an explicit prop dict(), toolkit bug
                 at = AnchoredText("%s:%d" % (d, channels[j]), loc=2, pad=0.3, borderpad=0.3, prop=dict())
                 at.patch.set_boxstyle("square,pad=0.")
@@ -523,7 +523,7 @@ def gbmfit(data, t, duration, dlist=dlist, channels=[0,1,2,3,4,5,6,7], poiss=Fal
                 else:
                     plt.gca().xaxis.set_ticklabels([])
     if plot:
-        for (i, j) in itertools.product(range(nd), range(nc)):
+        for (i, j) in itertools.product(list(range(nd)), list(range(nc))):
             plt.subplot(nc, nd, 1+j*nd+i)
             plt.ylim(ymin[dlist[i][0] == 'n',j], ymax[dlist[i][0] == 'n',j])
             if j != 0: # not first channel
@@ -553,6 +553,7 @@ def newtonian_extrapolation(b, f, p, s, r, vr, vb, spos, vfinv):
 
     return s, p, spos, vfinv
 
+
 def newtonian_extrapolation_theano():
 
     # Set the theano 'floatX' flag adjust precision; double precision floating-point
@@ -567,8 +568,8 @@ def newtonian_extrapolation_theano():
     r = T.matrix('r')
     vr = T.matrix('vr')
     vb = T.row('vb')
-    vfinv = T.row('vfinv')
-    spos = T.vector('spos')
+    vfinv = T.matrix('vfinv')
+    spos = T.bvector('spos')
 
     a = (f - p) * vfinv
     dvf = spos[:, np.newaxis] * (2 * s[:, np.newaxis] * vr + r)
@@ -579,8 +580,8 @@ def newtonian_extrapolation_theano():
     o_s = s - dl / ddl
     o_p = b + r * o_s[:, np.newaxis]
     o_spos = o_s > 0
-    o_vf = T.maximum(b, p) + vb + (spos * s)[:, np.newaxis] ** 2 * vr
-    o_vfinv = 1.0 / o_vf[0:1,:]
+    o_vf = T.maximum(b, o_p) + vb + (o_spos * o_s)[:, np.newaxis] ** 2 * vr
+    o_vfinv = 1.0 / o_vf
 
     return theano.function(inputs=[b, f, p, s, r, vr, vb, spos, vfinv],
                            outputs=[o_s, o_p, o_spos, o_vfinv],
@@ -615,7 +616,7 @@ def gbmlikelihood(extrapolation_fn, fg, bg, response=None, nnewton=3, beta=1.0, 
     # fixed constants for faster derivative calculation
     rsq  = r**2           # square of response matrix
     if type(vb) is float or type(vb) is int: # vb in terms of fractional amount std (e.g. 10%)
-        print "triggered fractional vb"
+        print ("triggered fractional vb")
         vb = vb * b**2
     else:
         vb = vb.reshape(b.shape)
@@ -632,7 +633,7 @@ def gbmlikelihood(extrapolation_fn, fg, bg, response=None, nnewton=3, beta=1.0, 
     # constant vf chi-sq solution initial guess for source amplitude
     vf = np.maximum(b, f) + vb # total variance of foreground counts
     vn = b + vb # total variance in noise counts (poisson + fit error)
-    vfinv = 1./vf
+    vfinv = 1. / np.resize(vf, vr.shape)
     s = np.sum(r * d * vfinv, axis=-1) / np.sum(rsq * vfinv, axis=-1)
     spos = s > 0 # response uncertainty will only contribute for positive amplitude
     p = b + r * s[:,np.newaxis] # predicted foreground rate
@@ -781,7 +782,7 @@ def downselect(events, overlapfactor=0.2, threshold=None, combinespec=True, fixe
             uniqueevents.append(e1)
     return np.array(uniqueevents)
 
-# pretty print events >= threshold, optional downselection and sort by strength
+# pretty print (events >= threshold, optional downselection and sort by strength)
 # xref is subtracted from MET time in events before printed, e.g. to show GPS
 # out can be an open filehandle, or STDOUT by default
 def dump(events, sorted=True, downsel=False, threshold=None, xref=0, out=None):
@@ -820,7 +821,7 @@ def loaddump(dumpfile):
         header = "    tcent    duration  gti rock good  phi  theta (p,t)cele spec ampli  snr  snr0  snr1 chisq chisq+ sun  earth   logLR  coincLR  CR0   CR1   CR2"
         hline = lines.index(header.strip())
         # events = np.genfromtxt(dumpfile, skiprows=hline+2, invalid_raise=False) # not going to work with ancient numpy on cluster
-        events = np.array([map(float, a.split()) for a in lines[hline+2:]])
+        events = np.array([list(map(float, a.split())) for a in lines[hline+2:]])
     except:
         events = []
     return events
@@ -888,7 +889,7 @@ def occultationtimes(start, stop, slist=['Sun'] + strongsources, data=None):
 # shows the angle of strong sources with respect to direction of Earth center as a function of time
 # used to check for occultation steps in background
 def sourceangles(data, met, dur=1.024, slist=['Sun'] + strongsources, showbg=False):
-    import plots
+    from . import plots
     plots.importmpl()
     plt = plots.plt
     poshist = data['poshist']['GLAST POS HIST'].data
